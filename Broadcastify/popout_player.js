@@ -60,10 +60,20 @@
     styleNode.textContent = customStyles;
     (document.head || document.documentElement).appendChild(styleNode);
 
-    // 2. Direct Auto-play Execution
+    // 2. Direct Auto-play Execution & HTML5 Kick
     function attemptAutoPlay() {
         const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
         const playBtn = document.getElementById('lp-play');
+        const audio = document.querySelector('audio');
+
+        // Direct HTML5 Audio playback attempt (bypasses UI stuck state)
+        if (audio) {
+            audio.play().then(() => {
+                console.log('[Userscript] Audio stream playing via HTML5 element.');
+            }).catch(() => {
+                // Autoplay blocked by browser policy; will be kicked on first click
+            });
+        }
 
         // Check if Broadcastify's JavaScript API is accessible
         if (pageWindow.ListenPlayer && typeof pageWindow.ListenPlayer.play === 'function') {
@@ -75,7 +85,7 @@
             }
         }
 
-        // DOM Fallback: Trigger standard events on play button
+        // DOM Fallback: Trigger standard mouse events on play button
         if (playBtn) {
             ['pointerdown', 'mousedown', 'mouseup', 'click'].forEach(eventType => {
                 const event = new MouseEvent(eventType, {
@@ -103,34 +113,47 @@
         }, 150);
     }
 
-    // 3. Stalled Connection Monitor & Auto-Restart
+    // 3. Stalled Connection & Spinner Fix (Linux Browser Support)
     let connectingTimer = null;
-    const CONNECT_TIMEOUT_MS = 5000; // Time in ms to wait before forcing restart
+    const CONNECT_TIMEOUT_MS = 3000; // Reset after 3 seconds of being stuck on connecting/spinning
 
     function triggerFeedRestart() {
+        console.log('[Userscript] Stuck connection detected. Hard-cycling audio stream...');
         const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
         const stopBtn = document.getElementById('lp-stop');
+        const audio = document.querySelector('audio');
 
+        // 1. Force Stop via API or DOM
         if (pageWindow.ListenPlayer && typeof pageWindow.ListenPlayer.stop === 'function') {
-            try {
-                pageWindow.ListenPlayer.stop();
-            } catch (e) {}
+            try { pageWindow.ListenPlayer.stop(); } catch (e) {}
         } else if (stopBtn) {
             stopBtn.click();
         }
 
-        // Brief delay before calling play again to let the socket/audio element clear
+        // 2. Clear underlying HTML5 Audio Buffer
+        if (audio) {
+            audio.pause();
+            audio.currentTime = 0;
+            audio.load(); // Forces socket re-handshake
+        }
+
+        // 3. Re-trigger Play after socket release
         setTimeout(() => {
             attemptAutoPlay();
-        }, 500);
+        }, 400);
     }
 
     function checkConnectionState() {
-        // Broadcastify popouts typically update an element displaying current playback status
         const statusElem = document.querySelector('.lp-status, #lp-status, .status-text');
-        const statusText = statusElem ? statusElem.innerText.toLowerCase() : '';
+        const playBtn = document.getElementById('lp-play');
+        const audio = document.querySelector('audio');
 
-        if (statusText.includes('connecting')) {
+        const statusText = statusElem ? statusElem.innerText.toLowerCase() : '';
+        const isSpinnerActive = playBtn && (playBtn.classList.contains('loading') || playBtn.classList.contains('fa-spin') || playBtn.classList.contains('is-loading'));
+        const isAudioStalled = audio && (audio.networkState === 2 && audio.readyState < 3 && !audio.paused);
+
+        // Detect if stuck on "connecting", spinner active, or HTML5 network stalled
+        if (statusText.includes('connecting') || isSpinnerActive || isAudioStalled) {
             if (!connectingTimer) {
                 connectingTimer = setTimeout(() => {
                     triggerFeedRestart();
@@ -145,7 +168,7 @@
         }
     }
 
-    // Monitor DOM status text for state changes
+    // Monitor DOM status text & play button class changes
     const observer = new MutationObserver(() => {
         checkConnectionState();
     });
@@ -153,9 +176,20 @@
     observer.observe(document.body, {
         childList: true,
         subtree: true,
-        characterData: true
+        characterData: true,
+        attributes: true,
+        attributeFilter: ['class', 'style']
     });
 
-    // Fallback interval check
+    // Interval fallback check
     setInterval(checkConnectionState, 1000);
+
+    // 4. One-click fallback gesture kick for Linux browsers
+    window.addEventListener('click', () => {
+        const audio = document.querySelector('audio');
+        if (audio && audio.paused) {
+            audio.play().catch(() => {});
+        }
+    }, { once: true });
+
 })();
