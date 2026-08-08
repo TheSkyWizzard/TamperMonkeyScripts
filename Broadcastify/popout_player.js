@@ -2,7 +2,7 @@
 // @name         Broadcastify Popout Auto-Play & UI Fix
 // @namespace    http://tampermonkey.net/
 // @version      1.0
-// @description  Auto-clicks play, monitors stuck connection states, and customizes UI layout
+// @description  Auto-clicks play, monitors stuck connection states (.lp-state-connecting), and customizes UI layout
 // @match        *://www.broadcastify.com/listen/feed/popout.php*
 // @match        *://broadcastify.com/listen/feed/popout.php*
 // @run-at       document-end
@@ -66,7 +66,7 @@
         const playBtn = document.getElementById('lp-play');
         const audio = document.querySelector('audio');
 
-        // Direct HTML5 Audio playback attempt (bypasses UI stuck state)
+        // Direct HTML5 Audio playback attempt
         if (audio) {
             audio.play().then(() => {
                 console.log('[Userscript] Audio stream playing via HTML5 element.');
@@ -113,12 +113,12 @@
         }, 150);
     }
 
-    // 3. Stalled Connection & Spinner Fix (Linux Browser Support)
+    // 3. Stalled Connection Monitor & Auto-Restart (.lp-state-connecting)
     let connectingTimer = null;
-    const CONNECT_TIMEOUT_MS = 3000; // Reset after 3 seconds of being stuck on connecting/spinning
+    const CONNECT_TIMEOUT_MS = 2500; // Time in ms before forcing a cycle when connecting state is present
 
     function triggerFeedRestart() {
-        console.log('[Userscript] Stuck connection detected. Hard-cycling audio stream...');
+        console.log('[Userscript] .lp-state-connecting persistent state detected. Forcing stream reload...');
         const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
         const stopBtn = document.getElementById('lp-stop');
         const audio = document.querySelector('audio');
@@ -130,17 +130,17 @@
             stopBtn.click();
         }
 
-        // 2. Clear underlying HTML5 Audio Buffer
+        // 2. Reset underlying HTML5 Audio element socket
         if (audio) {
             audio.pause();
             audio.currentTime = 0;
-            audio.load(); // Forces socket re-handshake
+            audio.load();
         }
 
-        // 3. Re-trigger Play after socket release
+        // 3. Re-trigger Play
         setTimeout(() => {
             attemptAutoPlay();
-        }, 400);
+        }, 350);
     }
 
     function checkConnectionState() {
@@ -148,12 +148,15 @@
         const playBtn = document.getElementById('lp-play');
         const audio = document.querySelector('audio');
 
+        // Check for .lp-state-connecting explicitly anywhere in the DOM
+        const isConnectingClassPresent = !!document.querySelector('.lp-state-connecting');
+        
         const statusText = statusElem ? statusElem.innerText.toLowerCase() : '';
         const isSpinnerActive = playBtn && (playBtn.classList.contains('loading') || playBtn.classList.contains('fa-spin') || playBtn.classList.contains('is-loading'));
         const isAudioStalled = audio && (audio.networkState === 2 && audio.readyState < 3 && !audio.paused);
 
-        // Detect if stuck on "connecting", spinner active, or HTML5 network stalled
-        if (statusText.includes('connecting') || isSpinnerActive || isAudioStalled) {
+        // If .lp-state-connecting exists or secondary indicators trigger:
+        if (isConnectingClassPresent || statusText.includes('connecting') || isSpinnerActive || isAudioStalled) {
             if (!connectingTimer) {
                 connectingTimer = setTimeout(() => {
                     triggerFeedRestart();
@@ -168,7 +171,7 @@
         }
     }
 
-    // Monitor DOM status text & play button class changes
+    // Monitor DOM mutations for class additions/removals like .lp-state-connecting
     const observer = new MutationObserver(() => {
         checkConnectionState();
     });
@@ -181,8 +184,8 @@
         attributeFilter: ['class', 'style']
     });
 
-    // Interval fallback check
-    setInterval(checkConnectionState, 1000);
+    // Fallback interval check
+    setInterval(checkConnectionState, 800);
 
     // 4. One-click fallback gesture kick for Linux browsers
     window.addEventListener('click', () => {
