@@ -2,7 +2,7 @@
 // @name         Broadcastify Popout Auto-Play & UI Fix
 // @namespace    http://tampermonkey.net/
 // @version      1.0
-// @description  Auto-clicks play, monitors stuck connection states (.lp-state-connecting), and customizes UI layout
+// @description  Auto-clicks play, monitors success state (.lp-status-success), and customizes UI layout
 // @match        *://www.broadcastify.com/listen/feed/popout.php*
 // @match        *://broadcastify.com/listen/feed/popout.php*
 // @run-at       document-end
@@ -60,7 +60,7 @@
     styleNode.textContent = customStyles;
     (document.head || document.documentElement).appendChild(styleNode);
 
-    // 2. Direct Auto-play Execution & HTML5 Kick
+    // 2. Direct Auto-play Execution
     function attemptAutoPlay() {
         const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
         const playBtn = document.getElementById('lp-play');
@@ -69,23 +69,19 @@
         // Direct HTML5 Audio playback attempt
         if (audio) {
             audio.play().then(() => {
-                console.log('[Userscript] Audio stream playing via HTML5 element.');
-            }).catch(() => {
-                // Autoplay blocked by browser policy; will be kicked on first click
-            });
+                console.log('[Userscript] Audio playing via HTML5 element.');
+            }).catch(() => {});
         }
 
-        // Check if Broadcastify's JavaScript API is accessible
+        // Broadcastify API call
         if (pageWindow.ListenPlayer && typeof pageWindow.ListenPlayer.play === 'function') {
             try {
                 pageWindow.ListenPlayer.play();
                 return true;
-            } catch (e) {
-                // Fallback to DOM manipulation if API call fails
-            }
+            } catch (e) {}
         }
 
-        // DOM Fallback: Trigger standard mouse events on play button
+        // DOM Fallback: Mouse event dispatch
         if (playBtn) {
             ['pointerdown', 'mousedown', 'mouseup', 'click'].forEach(eventType => {
                 const event = new MouseEvent(eventType, {
@@ -101,7 +97,7 @@
         return false;
     }
 
-    // Try playback immediately or retry shortly after load
+    // Initial load attempts
     if (!attemptAutoPlay()) {
         let attempts = 0;
         const autoPlayInterval = setInterval(() => {
@@ -113,81 +109,80 @@
         }, 150);
     }
 
-    // 3. Stalled Connection Monitor & Auto-Restart (.lp-state-connecting)
-    let connectingTimer = null;
-    const CONNECT_TIMEOUT_MS = 2500; // Time in ms before forcing a cycle when connecting state is present
+    // 3. Success-State Monitor (.lp-status-success Verification)
+    let connectionCheckTimer = null;
+    const SUCCESS_TIMEOUT_MS = 2500; // Time allowed to achieve .lp-status-success before cycling
 
-    function triggerFeedRestart() {
-        console.log('[Userscript] .lp-state-connecting persistent state detected. Forcing stream reload...');
+    function forceStreamReset() {
+        console.log('[Userscript] Target .lp-status-success not detected in time. Force-cycling connection...');
         const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
         const stopBtn = document.getElementById('lp-stop');
         const audio = document.querySelector('audio');
 
-        // 1. Force Stop via API or DOM
+        // 1. Stop playback via API or DOM
         if (pageWindow.ListenPlayer && typeof pageWindow.ListenPlayer.stop === 'function') {
             try { pageWindow.ListenPlayer.stop(); } catch (e) {}
         } else if (stopBtn) {
             stopBtn.click();
         }
 
-        // 2. Reset underlying HTML5 Audio element socket
+        // 2. Clear HTML5 Audio element buffer and socket connection
         if (audio) {
             audio.pause();
             audio.currentTime = 0;
             audio.load();
         }
 
-        // 3. Re-trigger Play
+        // 3. Re-trigger play attempt
         setTimeout(() => {
             attemptAutoPlay();
-        }, 350);
+        }, 400);
     }
 
-    function checkConnectionState() {
-        const statusElem = document.querySelector('.lp-status, #lp-status, .status-text');
-        const playBtn = document.getElementById('lp-play');
+    function verifySuccessState() {
         const audio = document.querySelector('audio');
-
-        // Check for .lp-state-connecting explicitly anywhere in the DOM
-        const isConnectingClassPresent = !!document.querySelector('.lp-state-connecting');
         
-        const statusText = statusElem ? statusElem.innerText.toLowerCase() : '';
-        const isSpinnerActive = playBtn && (playBtn.classList.contains('loading') || playBtn.classList.contains('fa-spin') || playBtn.classList.contains('is-loading'));
-        const isAudioStalled = audio && (audio.networkState === 2 && audio.readyState < 3 && !audio.paused);
+        // Check for success elements or active audio playback state
+        const isSuccessClassPresent = !!document.querySelector('.lp-status-success');
+        const isStatusBarSuccess = !!document.querySelector('.lp-status-bar.lp-status-success');
+        const isAudioPlaying = audio && !audio.paused && audio.currentTime > 0 && audio.readyState >= 3;
 
-        // If .lp-state-connecting exists or secondary indicators trigger:
-        if (isConnectingClassPresent || statusText.includes('connecting') || isSpinnerActive || isAudioStalled) {
-            if (!connectingTimer) {
-                connectingTimer = setTimeout(() => {
-                    triggerFeedRestart();
-                    connectingTimer = null;
-                }, CONNECT_TIMEOUT_MS);
+        const isConnectedAndPlaying = isSuccessClassPresent || isStatusBarSuccess || isAudioPlaying;
+
+        if (!isConnectedAndPlaying) {
+            // Not connected successfully yet; start or keep timer running
+            if (!connectionCheckTimer) {
+                connectionCheckTimer = setTimeout(() => {
+                    forceStreamReset();
+                    connectionCheckTimer = null;
+                }, SUCCESS_TIMEOUT_MS);
             }
         } else {
-            if (connectingTimer) {
-                clearTimeout(connectingTimer);
-                connectingTimer = null;
+            // Confirmed successful connection! Clear timer.
+            if (connectionCheckTimer) {
+                clearTimeout(connectionCheckTimer);
+                connectionCheckTimer = null;
+                console.log('[Userscript] Connection verified via .lp-status-success / audio playback.');
             }
         }
     }
 
-    // Monitor DOM mutations for class additions/removals like .lp-state-connecting
+    // Observe changes to classes or elements inside the status bar
     const observer = new MutationObserver(() => {
-        checkConnectionState();
+        verifySuccessState();
     });
 
     observer.observe(document.body, {
         childList: true,
         subtree: true,
-        characterData: true,
         attributes: true,
         attributeFilter: ['class', 'style']
     });
 
-    // Fallback interval check
-    setInterval(checkConnectionState, 800);
+    // Fallback interval verification
+    setInterval(verifySuccessState, 600);
 
-    // 4. One-click fallback gesture kick for Linux browsers
+    // 4. One-click gesture unblock for Linux browsers
     window.addEventListener('click', () => {
         const audio = document.querySelector('audio');
         if (audio && audio.paused) {
